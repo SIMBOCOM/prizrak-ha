@@ -21,7 +21,7 @@
 ### Через HACS
 
 1. Откройте HACS → ⋮ → «Пользовательские репозитории».
-2. Вставьте `https://github.com/SIMBOCOM/prizrak-ha-no-gps`, выберите тип **Integration** («Интеграция») и нажмите «Добавить».
+2. Вставьте `https://github.com/SIMBOCOM/prizrak-ha`, выберите тип **Integration** («Интеграция») и нажмите «Добавить».
 3. Откройте **Prizrak Monitoring без GPS**, нажмите «Скачать» и перезапустите Home Assistant.
 4. При первой установке добавьте **Prizrak Monitoring** в разделе «Настройки → Устройства и службы». Если интеграция уже настроена, она использует существующую запись.
 
@@ -311,7 +311,7 @@ automation:
 
 ## Поддержка
 
-- **Проблемы**: [GitHub Issues](https://github.com/SIMBOCOM/prizrak-ha-no-gps/issues)
+- **Проблемы**: [GitHub Issues](https://github.com/SIMBOCOM/prizrak-ha/issues)
 
 ## Лицензия
 

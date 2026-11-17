@@ -2,7 +2,7 @@
 
 ## Установка через HACS
 
-Откройте HACS → ⋮ → «Пользовательские репозитории», добавьте `https://github.com/SIMBOCOM/prizrak-ha-no-gps` с типом **Integration** и скачайте **Prizrak Monitoring без GPS**. Перезапустите Home Assistant.
+Откройте HACS → ⋮ → «Пользовательские репозитории», добавьте `https://github.com/SIMBOCOM/prizrak-ha` с типом **Integration** и скачайте **Prizrak Monitoring без GPS**. Перезапустите Home Assistant.
 
 ## Ручная установка версии без GPS
 
@@ -10,7 +10,7 @@
 
 1. Распакуйте архив и скопируйте папку `custom_components/prizrak` в `/config/custom_components/`.
 2. Если Prizrak уже установлен, замените его каталог целиком. После перезапуска интеграция уберёт свои прежние GPS-сущности. Если вы добавляли GPS на панель вручную, отредактируйте соответствующие карточки.
-3. Для обновлений этой версии выбирайте в HACS репозиторий `SIMBOCOM/prizrak-ha-no-gps`.
+3. Для обновлений этой версии выбирайте в HACS репозиторий `SIMBOCOM/prizrak-ha`.
 
 ### Перезапуск Home Assistant
 ```bash
@@ -82,5 +82,5 @@ sudo systemctl restart home-assistant@homeassistant
 ## Дополнительная информация
 
 - **Документация**: [README.md](README.md)
-- **GitHub**: https://github.com/SIMBOCOM/prizrak-ha-no-gps
-- **Issues**: https://github.com/SIMBOCOM/prizrak-ha-no-gps/issues
+- **GitHub**: https://github.com/SIMBOCOM/prizrak-ha
+- **Issues**: https://github.com/SIMBOCOM/prizrak-ha/issues
