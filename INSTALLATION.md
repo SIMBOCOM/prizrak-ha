@@ -4,13 +4,30 @@
 
 Откройте HACS → ⋮ → «Пользовательские репозитории», добавьте `https://github.com/SIMBOCOM/prizrak-ha` с типом **Integration** и скачайте **Prizrak Monitoring без GPS**. Перезапустите Home Assistant.
 
+<a id="switch-repository"></a>
+
+## Переход с исходной интеграции в Marketplace
+
+В Home Assistant 2026.11 сообщение `The prizrak directory belongs to dsultanr/prizrak-ha-integration` означает, что Marketplace считает исходный репозиторий владельцем папки `custom_components/prizrak`.
+
+Если вы только скачали исходную версию и ещё не настраивали Prizrak, удалите исходную версию в Marketplace и установите **Prizrak Monitoring без GPS** из `SIMBOCOM/prizrak-ha`.
+
+Если Prizrak уже настроен, сохраните его запись в «Устройства и службы». Кнопка «Удалить и деинсталлировать» удалит и эту запись.
+
+1. Сделайте резервную копию Home Assistant. В файловом менеджере переместите **всю папку** `/config/custom_components/prizrak` за пределы `custom_components`, например в `/config/prizrak-before-switch`. Выберите свободное имя и оставьте Home Assistant запущенным.
+2. Откройте [интеграцию Marketplace](https://my.home-assistant.io/redirect/integration/?domain=marketplace). В меню ⋮ её записи выберите «Перезагрузить». После перезагрузки откройте карточку `dsultanr/prizrak-ha-integration` и убедитесь, что она показывает «Не установлено».
+3. Установите **Prizrak Monitoring без GPS** из `SIMBOCOM/prizrak-ha`. Дождитесь окончания установки и перезапустите Home Assistant.
+4. Откройте «Настройки → Устройства и службы → Prizrak Monitoring» и проверьте своё устройство и его сущности охраны. При переходе на версию без GPS прежние GPS-сущности удаляются.
+
+Если ошибка владения осталась и новая установка не началась, верните сохранённую папку на прежнее место до перезапуска Home Assistant.
+
 ## Ручная установка версии без GPS
 
 Для библиотеки `websockets` версии 17.4 требуется Python 3.11 или новее. При запуске Home Assistant проверяет зависимость `websockets>=17.4` и при необходимости устанавливает её.
 
 1. Распакуйте архив и скопируйте папку `custom_components/prizrak` в `/config/custom_components/`.
 2. Если Prizrak уже установлен, замените его каталог целиком. После перезапуска интеграция уберёт свои прежние GPS-сущности. Если вы добавляли GPS на панель вручную, отредактируйте соответствующие карточки.
-3. Для обновлений этой версии выбирайте в HACS репозиторий `SIMBOCOM/prizrak-ha`.
+3. Копирование файлов вручную сохраняет прежнюю привязку Marketplace. Для получения обновлений из `SIMBOCOM/prizrak-ha` выполните [переход с исходной интеграции](#switch-repository), если она была установлена через магазин.
 
 ### Перезапуск Home Assistant
 ```bash
