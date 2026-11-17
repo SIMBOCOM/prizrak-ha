@@ -9,16 +9,15 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN, CONF_EMAIL, CONF_PASSWORD
-from .client import PrizrakClient
+from .client import PassportError, PrizrakClient
 
 _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_EMAIL): str,
+        vol.Required(CONF_EMAIL): vol.All(str, vol.Strip),
         vol.Required(CONF_PASSWORD): str,
     }
 )
@@ -29,20 +28,15 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
-    # Test authentication
     client = PrizrakClient(
         data[CONF_EMAIL],
         data[CONF_PASSWORD],
-        lambda device_id, state: None  # Dummy callback for validation
+        lambda device_id, state: None,
     )
 
-    # authenticate() is now async, so we can call it directly
-    auth_result = await client.authenticate()
+    if not await client.authenticate():
+        raise PassportError(client.last_auth_error or "cannot_connect")
 
-    if not auth_result:
-        raise InvalidAuth
-
-    # Return info that you want to store in the config entry.
     return {"title": data[CONF_EMAIL]}
 
 
@@ -59,10 +53,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 info = await validate_input(self.hass, user_input)
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
+            except PassportError as exc:
+                errors["base"] = exc.args[0]
             except Exception as exc:  # pylint: disable=broad-except
                 _LOGGER.error("Prizrak configuration failed (%s)", type(exc).__name__)
                 errors["base"] = "unknown"
@@ -76,11 +68,3 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
         )
-
-
-class CannotConnect(HomeAssistantError):
-    """Error to indicate we cannot connect."""
-
-
-class InvalidAuth(HomeAssistantError):
-    """Error to indicate there is invalid auth."""

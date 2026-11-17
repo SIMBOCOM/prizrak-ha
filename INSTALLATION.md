@@ -85,10 +85,15 @@ sudo systemctl restart home-assistant@homeassistant
 3. Перезапустите Home Assistant
 4. Очистите кеш браузера (Ctrl+Shift+R)
 
-### Ошибки аутентификации
-1. Проверьте правильность email/пароля на monitoring.tecel.ru
-2. Убедитесь, что аккаунт активен
-3. Проверьте логи: Settings → System → Logs
+### Ошибки входа
+
+Откройте «Настройки → Система → Журнал сервера» и поищите `TECEL Passport`. Начиная с 1.0.5 запись указывает этап входа и тип ошибки. При ошибке соединения TCP журнал также содержит номер системной ошибки (`errno`).
+
+Для Home Assistant Container доступ к TECEL можно проверить с Docker-хоста. Подставьте имя своего контейнера. Команда запрашивает общедоступную версию сервиса и при успехе выводит `200`.
+
+```sh
+docker exec homeassistant python -c "import urllib.request; print(urllib.request.urlopen('https://monitoring.tecel.ru/passport/version_data', timeout=10).status)"
+```
 
 ### Сенсоры показывают "unavailable"
 1. Проверьте подключение к интернету

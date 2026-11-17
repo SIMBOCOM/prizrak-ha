@@ -12,8 +12,16 @@
     },
     "error": {
       "invalid_auth": "Неверный email или пароль",
-      "cannot_connect": "Не удалось подключиться к серверам Prizrak",
-      "unknown": "Произошла неизвестная ошибка"
+      "cannot_connect": "Home Assistant не смог подключиться к monitoring.tecel.ru по порту 443. Проверьте доступ с сервера или из контейнера Home Assistant.",
+      "unknown": "Произошла неизвестная ошибка",
+      "connection_dns": "Home Assistant не смог определить адрес сервера TECEL. Проверьте DNS на сервере или в контейнере Home Assistant.",
+      "connection_tls": "Home Assistant не смог установить защищённое соединение с TECEL. Проверьте часы системы и доверенные сертификаты.",
+      "connection_proxy": "Home Assistant не смог подключиться к прокси для доступа к TECEL. Проверьте настройки прокси.",
+      "connection_timeout": "Истекло время ожидания ответа TECEL. Проверьте доступ из Home Assistant и повторите попытку.",
+      "passport_response": "TECEL Passport вернул неожиданный ответ. Подробности есть в журнале Home Assistant по запросу Prizrak.",
+      "passport_action_required": "TECEL Passport требует действия в вашем аккаунте. Войдите на monitoring.tecel.ru, чтобы увидеть запрос.",
+      "passport_version": "TECEL Passport отклонил версию клиента. Повторите попытку, чтобы запросить актуальную версию.",
+      "rate_limited": "TECEL временно ограничил число попыток входа. Подождите перед следующей попыткой."
     },
     "abort": {
       "already_configured": "Этот аккаунт уже настроен"

@@ -6,6 +6,7 @@ import json
 import aiohttp
 import urllib.parse
 import logging
+import socket
 from typing import Optional, Dict, Any, Callable
 import time
 import hashlib
@@ -29,6 +30,10 @@ def _http_session(timeout: int = 10) -> aiohttp.ClientSession:
     )
 
 
+class PassportError(Exception):
+    """An error safe to display through Home Assistant translations."""
+
+
 class PrizrakClient:
     """Client for Prizrak monitoring system."""
 
@@ -45,7 +50,7 @@ class PrizrakClient:
             password: User password
             state_callback: Callback function for device state updates
         """
-        self.login = email
+        self.login = email.strip()
         self.password = password
         self._state_callback = state_callback
 
@@ -54,6 +59,7 @@ class PrizrakClient:
         self.ws_url = "wss://monitoring.tecel.ru"
 
         self.auth_token: Optional[str] = None
+        self.last_auth_error: str | None = None
         self.connection_id: Optional[str] = None
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None
         self.running = False
@@ -90,15 +96,13 @@ class PrizrakClient:
 
     async def _fetch_app_version(self, session: aiohttp.ClientSession) -> str:
         """Fetch the passport version used in the fingerprint."""
-        try:
-            async with session.get(f"{self.base_url}/passport/version_data") as response:
-                response.raise_for_status()
-                data = await response.json(content_type=None)
-                if version := data.get("app_version"):
-                    return version
-        except (aiohttp.ClientError, TimeoutError, ValueError, AttributeError) as exc:
-            _LOGGER.warning("Version lookup failed (%s), using fallback", type(exc).__name__)
-        return "296.0.0.0"
+        async with session.get(f"{self.base_url}/passport/version_data", allow_redirects=False) as response:
+            response.raise_for_status()
+            data = await response.json(content_type=None)
+        version = data.get("app_version") if isinstance(data, dict) else None
+        if not isinstance(version, str) or not version:
+            raise PassportError("passport_response")
+        return version
 
     def _get_fingerprint_token(self) -> str:
         """Generate fingerprint token for vtoken."""
@@ -111,9 +115,43 @@ class PrizrakClient:
         }
         return base64.b64encode(json.dumps(data).encode()).decode()
 
+    async def _passport_request(
+        self, session: aiohttp.ClientSession, method: str, params: dict, headers: dict
+    ) -> tuple[Any, str | None]:
+        """Make one Passport RPC. A JSON-RPC error takes precedence over a token."""
+        payload = {
+            "jsonrpc": "2.0",
+            "id": int(time.time() * 1000),
+            "method": method,
+            "params": {**params, "language_code": "EN"},
+        }
+        async with session.post(
+            self.passport_url, json=payload, headers=headers, allow_redirects=False
+        ) as response:
+            if response.status != 200:
+                response.raise_for_status()
+                raise PassportError("passport_response")
+            body = await response.json(content_type=None)
+            token = response.headers.get("x-atoken")
+        if not isinstance(body, dict):
+            raise PassportError("passport_response")
+        if error := body.get("error"):
+            message = error.get("message") if isinstance(error, dict) else None
+            if message in ("WRONG_PASSWORD", "INVALID_LOGIN", "WRONG_LOGIN", "LOGIN_NOT_FOUND"):
+                raise PassportError("invalid_auth")
+            if message in ("BOT_DETECTED", "CAPTCHA_ERROR", "PASS_MUST_BE_CHANGED"):
+                raise PassportError("passport_action_required")
+            if message == "versionError":
+                self.app_version = None
+                raise PassportError("passport_version")
+            raise PassportError("passport_response")
+        return body.get("result"), token
+
     async def authenticate(self) -> bool:
-        """Authenticate without logging credentials or the server's response body."""
+        """Sign in and retain only a safe error category if sign-in fails."""
+        self.last_auth_error = None
         _LOGGER.info("Authenticating with Prizrak")
+        stage = "version_data"
         try:
             async with _http_session() as session:
                 if not self.app_version:
@@ -122,54 +160,57 @@ class PrizrakClient:
                     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                     "x-vtoken": self._get_fingerprint_token(),
                 }
-                check_payload = {
-                    "jsonrpc": "2.0",
-                    "id": int(time.time() * 1000),
-                    "method": "CheckLogin",
-                    "params": {"login": self.login, "language_code": "EN"},
-                }
-                async with session.post(self.passport_url, json=check_payload, headers=headers) as response:
-                    if response.status != 200:
-                        _LOGGER.error("CheckLogin failed (HTTP %d)", response.status)
-                        return False
-                    await response.json(content_type=None)
-
-                auth_payload = {
-                    "jsonrpc": "2.0",
-                    "id": int(time.time() * 1000),
-                    "method": "Authorization",
-                    "params": {
-                        "login": self.login,
-                        "password": self.password,
-                        "forever": True,
-                        "language_code": "EN",
-                    },
-                }
-                async with session.post(self.passport_url, json=auth_payload, headers=headers) as response:
-                    if response.status != 200:
-                        _LOGGER.error("Authorization failed (HTTP %d)", response.status)
-                        return False
-                    auth_result = await response.json(content_type=None)
-                    token = response.headers.get("x-atoken")
-
-            if not token:
-                result = auth_result.get("result") or {}
-                token = result.get("atoken") or result.get("session_id")
-            if not token:
-                if (auth_result.get("error") or {}).get("message") == "versionError":
-                    self.app_version = None
-                    _LOGGER.warning("Passport version rejected, will fetch it again")
-                else:
-                    _LOGGER.error("Authorization returned no credentials")
-                return False
-
+                stage = "CheckLogin"
+                account, pre_auth_token = await self._passport_request(
+                    session, stage, {"login": self.login}, headers
+                )
+                if isinstance(account, dict) and account.get("login_used") is False:
+                    raise PassportError("invalid_auth")
+                if pre_auth_token:
+                    headers["X-AToken"] = pre_auth_token
+                stage = "Authorization"
+                result, token = await self._passport_request(
+                    session, stage, {"login": self.login, "password": self.password, "forever": True}, headers
+                )
+                if not token and isinstance(result, dict):
+                    token = result.get("atoken") or result.get("session_id")
+                if not isinstance(token, str) or not token:
+                    raise PassportError("passport_response")
+        except PassportError as exc:
+            self.last_auth_error = exc.args[0]
+            detail = self.last_auth_error
+        except (aiohttp.ClientSSLError, aiohttp.ServerFingerprintMismatch) as exc:
+            self.last_auth_error = "connection_tls"
+            detail = type(exc).__name__
+        except aiohttp.ClientConnectorError as exc:
+            if isinstance(exc, aiohttp.ClientProxyConnectionError):
+                self.last_auth_error = "connection_proxy"
+            elif isinstance(exc.os_error, socket.gaierror):
+                self.last_auth_error = "connection_dns"
+            else:
+                self.last_auth_error = "cannot_connect"
+            detail = f"{type(exc).__name__}, errno={exc.os_error.errno}"
+        except TimeoutError:
+            self.last_auth_error = "connection_timeout"
+            detail = "timeout"
+        except aiohttp.ClientResponseError as exc:
+            self.last_auth_error = "rate_limited" if exc.status == 429 else "passport_response"
+            detail = f"HTTP {exc.status}"
+        except (ValueError, aiohttp.ClientPayloadError) as exc:
+            self.last_auth_error = "passport_response"
+            detail = type(exc).__name__
+        except (aiohttp.ClientError, OSError) as exc:
+            self.last_auth_error = "cannot_connect"
+            detail = type(exc).__name__
+        else:
             self.auth_token = token
             self.last_auth_time = time.time()
             _LOGGER.info("Authentication succeeded")
             return True
-        except Exception as exc:
-            _LOGGER.error("Authentication failed (%s)", type(exc).__name__)
-            return False
+
+        self.auth_token = None
+        _LOGGER.warning("TECEL Passport %s failed (%s)", stage, detail)
+        return False
 
     def check_auth_validity(self) -> bool:
         """Check if we need to re-authenticate."""
@@ -652,18 +693,15 @@ class PrizrakClient:
         """Main run loop with auto-recovery."""
         self.running = True
 
-        # Initial authentication
-        if not await self.authenticate():
-            _LOGGER.error("Initial authentication failed!")
-            return
-
         while self.running:
             try:
                 # Check if token is still valid
                 if not self.check_auth_validity():
                     if not await self.authenticate():
-                        _LOGGER.error("Re-authentication failed, retrying in 30s...")
-                        await asyncio.sleep(30)
+                        if self.last_auth_error in ("invalid_auth", "passport_action_required"):
+                            self.running = False
+                            break
+                        await asyncio.sleep(60 if self.last_auth_error == "rate_limited" else 30)
                         continue
 
                 # Connect to WebSocket
