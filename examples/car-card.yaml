@@ -88,15 +88,6 @@ cards:
               style: |
                 ha-card {
                 }
-          - type: tile
-            entity: sensor.prizrak_95311_satellites
-            name: GPS
-            icon: mdi:satellite-variant
-            vertical: false
-            card_mod:
-              style: |
-                ha-card {
-                }
 
       # Center: SVG Car (120x180px)
       - type: picture-elements

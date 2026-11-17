@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
@@ -12,9 +11,10 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .client import PrizrakClient
-from .const import DOMAIN
+from .const import DOMAIN, SECURITY_FIELDS
 
 _LOGGER = logging.getLogger(__name__)
+_MISSING = object()
 
 
 class PrizrakDataUpdateCoordinator(DataUpdateCoordinator):
@@ -33,7 +33,7 @@ class PrizrakDataUpdateCoordinator(DataUpdateCoordinator):
 
         # Throttling for frontend updates to prevent browser memory issues
         # Data is always up-to-date on HA server, but browser UI updates are throttled
-        self.last_frontend_update: float = 0.0
+        self.last_frontend_update: float = float("-inf")
         self.frontend_update_interval: float = 30.0  # seconds
         self.throttling_enabled: bool = True
         self.throttling_disable_task: Any | None = None
@@ -46,48 +46,39 @@ class PrizrakDataUpdateCoordinator(DataUpdateCoordinator):
             device_id: Device ID
             device_state: New device state (partial update)
         """
-        # Use client.device_states which accumulates ALL fields
-        # instead of coordinator.devices which only gets partial updates
-        full_device_state = self.client.device_states.get(device_id, {})
+        full_device_state = self.client.device_states.get(device_id)
+        if full_device_state is None:
+            _LOGGER.warning("Device state missing from client cache")
+            return
 
-        if full_device_state:
-            # Add timestamp of last update (as datetime object for TIMESTAMP device_class)
+        if device_state:
             full_device_state["last_update"] = dt_util.utcnow()
 
-            # Convert timestamp strings to datetime objects
-            time_key = "last_device_exchange_time"
-            if time_key in full_device_state and isinstance(full_device_state[time_key], str):
-                try:
-                    full_device_state[time_key] = dt_util.parse_datetime(full_device_state[time_key])
-                except (ValueError, TypeError):
-                    _LOGGER.warning(f"Could not parse {time_key}: {full_device_state[time_key]}")
-                    full_device_state[time_key] = None
+        time_key = "last_device_exchange_time"
+        if isinstance(full_device_state.get(time_key), str):
+            try:
+                full_device_state[time_key] = dt_util.parse_datetime(full_device_state[time_key])
+            except (ValueError, TypeError):
+                _LOGGER.warning("Invalid device timestamp")
+                full_device_state[time_key] = None
 
-            # ALWAYS update coordinator's cache (server-side data)
-            # This ensures automations, scripts, and history have real-time data
-            self.devices[device_id] = full_device_state
+        # The client merges deltas in place. Compare against the last snapshot,
+        # including absence of a field after a disconnection.
+        previous = self.devices.get(device_id, {})
+        security_changed = any(
+            previous.get(key, _MISSING) != full_device_state.get(key, _MISSING)
+            for key in SECURITY_FIELDS
+        )
+        self.devices[device_id] = full_device_state.copy()
 
-            # Throttle frontend updates to prevent browser memory issues
-            # Only notify frontend (browser UI) if enough time has passed
-            current_time = time.time()
-            time_since_last_update = current_time - self.last_frontend_update
-
-            # Check if throttling is enabled and enough time has passed
-            should_update = not self.throttling_enabled or time_since_last_update >= self.frontend_update_interval
-
-            if should_update:
-                # Notify all listeners (entities) about the update → triggers browser UI redraw
-                self.async_set_updated_data(self.devices)
-                self.last_frontend_update = current_time
-                throttle_status = "disabled" if not self.throttling_enabled else f"throttled: {time_since_last_update:.1f}s since last"
-                _LOGGER.debug(f"Frontend update sent ({throttle_status})")
-            else:
-                # Data updated on server, but browser UI not notified yet (throttled)
-                _LOGGER.debug(
-                    f"Frontend update skipped (throttled: {time_since_last_update:.1f}s < {self.frontend_update_interval}s)"
-                )
-        else:
-            _LOGGER.warning(f"Device {device_id} not found in client.device_states")
+        now = time.monotonic()
+        if (
+            security_changed
+            or not self.throttling_enabled
+            or now - self.last_frontend_update >= self.frontend_update_interval
+        ):
+            self.async_set_updated_data(self.devices)
+            self.last_frontend_update = now
 
     def disable_throttling_temporarily(self, duration: float = 30.0) -> None:
         """Temporarily disable frontend update throttling.

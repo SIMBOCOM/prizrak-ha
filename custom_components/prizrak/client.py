@@ -1,8 +1,9 @@
 """Prizrak monitoring client for Home Assistant."""
 import asyncio
 import websockets
+from websockets.exceptions import ConnectionClosed
 import json
-import requests
+import aiohttp
 import urllib.parse
 import logging
 from typing import Optional, Dict, Any, Callable
@@ -10,7 +11,22 @@ import time
 import hashlib
 import base64
 
+from .const import SECURITY_FIELDS
+
 _LOGGER = logging.getLogger(__name__)
+# websockets traces the request URI, headers, and frames. Keep wire logging
+# disabled for this client even when HA enables debug logging on all libraries.
+_WIRE_LOGGER = logging.Logger(__name__ + ".wire")
+_WIRE_LOGGER.disabled = True
+
+
+def _http_session(timeout: int = 10) -> aiohttp.ClientSession:
+    """Create a short-lived HTTP client for token-bearing requests."""
+    return aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=timeout),
+        trust_env=True,
+        cookie_jar=aiohttp.DummyCookieJar(),
+    )
 
 
 class PrizrakClient:
@@ -47,6 +63,8 @@ class PrizrakClient:
         self.invocation_counter = 0
         self.devices = []
         self.device_states = {}
+        self._last_device_event: dict[int, float] = {}
+        self._stream_closed = False
         self.last_auth_time = 0
         self.auth_validity_hours = 12
         self.last_message_time = 0
@@ -70,32 +88,20 @@ class PrizrakClient:
         # Frontend web version (from passport.js?v=X.X.XXX)
         self.frontend_version: Optional[str] = None
 
-    def _fetch_app_version_sync(self) -> str:
-        """Fetch current app version from /passport/version_data API (synchronous)."""
+    async def _fetch_app_version(self, session: aiohttp.ClientSession) -> str:
+        """Fetch the passport version used in the fingerprint."""
         try:
-            _LOGGER.info("Fetching app version from monitoring.tecel.ru...")
-            response = requests.get(f"{self.base_url}/passport/version_data", timeout=10)
-            if response.status_code != 200:
-                raise Exception(f"Failed to fetch version_data: {response.status_code}")
-
-            data = response.json()
-            version = data.get("app_version")
-            if not version:
-                raise Exception("app_version not found in version_data response")
-
-            _LOGGER.info(f"Detected app version: {version}")
-            return version
-
-        except Exception as e:
-            _LOGGER.warning(f"Failed to fetch app version: {e}, using fallback 296.0.0.0")
-            return "296.0.0.0"
+            async with session.get(f"{self.base_url}/passport/version_data") as response:
+                response.raise_for_status()
+                data = await response.json(content_type=None)
+                if version := data.get("app_version"):
+                    return version
+        except (aiohttp.ClientError, TimeoutError, ValueError, AttributeError) as exc:
+            _LOGGER.warning("Version lookup failed (%s), using fallback", type(exc).__name__)
+        return "296.0.0.0"
 
     def _get_fingerprint_token(self) -> str:
         """Generate fingerprint token for vtoken."""
-        # Fetch version on first use
-        if not self.app_version:
-            self.app_version = self._fetch_app_version_sync()
-
         data = {
             "VTokenKey": "x-vtoken",
             "FingerPrint": hashlib.md5("browser_fingerprint".encode()).hexdigest(),
@@ -105,104 +111,65 @@ class PrizrakClient:
         }
         return base64.b64encode(json.dumps(data).encode()).decode()
 
-    def _authenticate_sync(self) -> bool:
-        """Synchronous authentication - internal use only."""
-        try:
-            _LOGGER.info(f"Authenticating user: {self.login}")
-
-            headers = {
-                'content-type': 'application/json',
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'x-vtoken': self._get_fingerprint_token()
-            }
-
-            # Step 1: CheckLogin
-            check_payload = {
-                "jsonrpc": "2.0",
-                "id": int(time.time() * 1000),
-                "method": "CheckLogin",
-                "params": {
-                    "login": self.login,
-                    "language_code": "EN"
-                }
-            }
-
-            response = requests.post(self.passport_url, json=check_payload, headers=headers, timeout=10)
-            if response.status_code != 200:
-                _LOGGER.error(f"CheckLogin failed: {response.status_code}")
-                return False
-
-            check_result = response.json()
-            _LOGGER.debug(f"CheckLogin result: {check_result}")
-
-            # Step 2: Authorization
-            auth_payload = {
-                "jsonrpc": "2.0",
-                "id": int(time.time() * 1000),
-                "method": "Authorization",
-                "params": {
-                    "login": self.login,
-                    "password": self.password,
-                    "forever": True,
-                    "language_code": "EN"
-                }
-            }
-
-            response = requests.post(self.passport_url, json=auth_payload, headers=headers, timeout=10)
-            if response.status_code != 200:
-                _LOGGER.error(f"Authorization failed: {response.status_code}")
-                return False
-
-            auth_result = response.json()
-            _LOGGER.debug(f"Auth response: {auth_result}")
-
-            # Check for x-atoken in response headers
-            x_atoken = response.headers.get('x-atoken') or response.headers.get('X-AToken')
-
-            if x_atoken:
-                _LOGGER.info(f"Got Atoken from headers")
-                self.auth_token = x_atoken
-                self.last_auth_time = time.time()
-                return True
-
-            # Check if authorization was successful
-            if 'result' in auth_result:
-                result = auth_result['result']
-
-                # Check for atoken in result
-                if 'atoken' in result:
-                    self.auth_token = result['atoken']
-                    _LOGGER.info(f"Got Atoken from result")
-                    self.last_auth_time = time.time()
-                    return True
-
-                # Session created successfully
-                if 'session_id' in result:
-                    session_id = result['session_id']
-                    _LOGGER.info(f"Session created: {session_id}")
-                    self.auth_token = session_id
-                    self.last_auth_time = time.time()
-                    _LOGGER.warning("Using session_id as Atoken (may not work)")
-                    return True
-                else:
-                    _LOGGER.error(f"No session_id or atoken in response: {result}")
-                    return False
-            else:
-                _LOGGER.error(f"No result in response: {auth_result}")
-                error = auth_result.get('error', {})
-                if error.get('message') == 'versionError':
-                    _LOGGER.warning("Version error detected, will re-fetch app version on next attempt")
-                    self.app_version = None
-                return False
-
-        except Exception as e:
-            _LOGGER.error(f"Authentication error: {e}")
-            return False
-
     async def authenticate(self) -> bool:
-        """Authenticate using login/password via passport API (async wrapper)."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._authenticate_sync)
+        """Authenticate without logging credentials or the server's response body."""
+        _LOGGER.info("Authenticating with Prizrak")
+        try:
+            async with _http_session() as session:
+                if not self.app_version:
+                    self.app_version = await self._fetch_app_version(session)
+                headers = {
+                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "x-vtoken": self._get_fingerprint_token(),
+                }
+                check_payload = {
+                    "jsonrpc": "2.0",
+                    "id": int(time.time() * 1000),
+                    "method": "CheckLogin",
+                    "params": {"login": self.login, "language_code": "EN"},
+                }
+                async with session.post(self.passport_url, json=check_payload, headers=headers) as response:
+                    if response.status != 200:
+                        _LOGGER.error("CheckLogin failed (HTTP %d)", response.status)
+                        return False
+                    await response.json(content_type=None)
+
+                auth_payload = {
+                    "jsonrpc": "2.0",
+                    "id": int(time.time() * 1000),
+                    "method": "Authorization",
+                    "params": {
+                        "login": self.login,
+                        "password": self.password,
+                        "forever": True,
+                        "language_code": "EN",
+                    },
+                }
+                async with session.post(self.passport_url, json=auth_payload, headers=headers) as response:
+                    if response.status != 200:
+                        _LOGGER.error("Authorization failed (HTTP %d)", response.status)
+                        return False
+                    auth_result = await response.json(content_type=None)
+                    token = response.headers.get("x-atoken")
+
+            if not token:
+                result = auth_result.get("result") or {}
+                token = result.get("atoken") or result.get("session_id")
+            if not token:
+                if (auth_result.get("error") or {}).get("message") == "versionError":
+                    self.app_version = None
+                    _LOGGER.warning("Passport version rejected, will fetch it again")
+                else:
+                    _LOGGER.error("Authorization returned no credentials")
+                return False
+
+            self.auth_token = token
+            self.last_auth_time = time.time()
+            _LOGGER.info("Authentication succeeded")
+            return True
+        except Exception as exc:
+            _LOGGER.error("Authentication failed (%s)", type(exc).__name__)
+            return False
 
     def check_auth_validity(self) -> bool:
         """Check if we need to re-authenticate."""
@@ -211,7 +178,7 @@ class PrizrakClient:
 
         hours_since_auth = (time.time() - self.last_auth_time) / 3600
         if hours_since_auth > self.auth_validity_hours:
-            _LOGGER.info(f"Token expired ({hours_since_auth:.1f}h), re-authenticating...")
+            _LOGGER.info("Refreshing authentication")
             return False
 
         return True
@@ -240,50 +207,36 @@ class PrizrakClient:
             'x-signalr-user-agent': 'Microsoft SignalR/7.0'
         }
 
-    def _negotiate_connection_sync(self) -> Optional[str]:
-        """Synchronous connection negotiation - internal use only."""
+    async def negotiate_connection(self) -> Optional[str]:
+        """Negotiate a SignalR connection."""
         negotiate_url = f"{self.base_url}/api/Control/negotiate?negotiateVersion=1"
         try:
-            _LOGGER.info("Negotiating SignalR connection...")
-            response = requests.post(negotiate_url, headers=self._get_headers(), timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                _LOGGER.debug(f"Negotiate response: {data}")
-                connection_token = data.get('connectionToken')
-                _LOGGER.info(f"Connection negotiated successfully")
-                return connection_token
-            else:
-                _LOGGER.error(f"Negotiate failed: {response.status_code}")
-                return None
-        except Exception as e:
-            _LOGGER.error(f"Negotiation error: {e}")
+            async with _http_session() as session:
+                async with session.post(negotiate_url, headers=self._get_headers()) as response:
+                    if response.status != 200:
+                        _LOGGER.error("Negotiation failed (HTTP %d)", response.status)
+                        return None
+                    data = await response.json(content_type=None)
+                    return data.get("connectionToken")
+        except Exception as exc:
+            _LOGGER.error("Negotiation failed (%s)", type(exc).__name__)
             return None
 
-    async def negotiate_connection(self) -> Optional[str]:
-        """Negotiate SignalR connection (async wrapper)."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._negotiate_connection_sync)
-
-    async def delete_connection(self, connection_id: str):
-        """Delete an existing connection on the server."""
+    async def delete_connection(self, connection_id: str) -> bool:
+        """Close a stale connection without tracing its token-bearing URL."""
         try:
-            delete_url = f"{self.base_url}/api/Control?id={connection_id}"
-            _LOGGER.info(f"Attempting to delete existing connection...")
-
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: requests.delete(delete_url, headers=self._get_headers(), timeout=5)
-            )
-
-            if response.status_code in [200, 204, 404]:
-                _LOGGER.info(f"Existing connection deleted or already gone (HTTP {response.status_code})")
-                return True
-            else:
-                _LOGGER.warning(f"Delete connection returned HTTP {response.status_code}")
-                return False
-        except Exception as e:
-            _LOGGER.warning(f"Failed to delete connection: {e}")
+            async with _http_session(timeout=5) as session:
+                async with session.delete(
+                    f"{self.base_url}/api/Control",
+                    params={"id": connection_id},
+                    headers=self._get_headers(),
+                ) as response:
+                    if response.status in (200, 204, 404):
+                        return True
+                    _LOGGER.warning("Connection cleanup failed (HTTP %d)", response.status)
+                    return False
+        except Exception as exc:
+            _LOGGER.warning("Connection cleanup failed (%s)", type(exc).__name__)
             return False
 
     def _cleanup_pending_invocations(self):
@@ -307,15 +260,20 @@ class PrizrakClient:
             if not self.connection_id:
                 return False
 
-        auth_payload = json.dumps(self._create_auth_payload())
-        encoded_auth = urllib.parse.quote(auth_payload)
-        ws_url = f"{self.ws_url}/api/Control?id={self.connection_id}&access_token={encoded_auth}"
+        query = urllib.parse.urlencode({"id": self.connection_id})
+        ws_url = f"{self.ws_url}/api/Control?{query}"
 
-        ws_headers = {'Origin': 'https://monitoring.tecel.ru'}
+        ws_headers = {
+            'Origin': self.base_url,
+            'Authorization': self._get_headers()['authorization'],
+        }
 
         try:
             _LOGGER.info("Connecting to WebSocket...")
-            self.websocket = await websockets.connect(ws_url, additional_headers=ws_headers, compression=None)
+            self.websocket = await websockets.connect(
+                ws_url, additional_headers=ws_headers, compression=None, logger=_WIRE_LOGGER
+            )
+            self._stream_closed = False
             _LOGGER.info("WebSocket connected!")
             self.reconnect_attempts = 0
             return True
@@ -355,7 +313,7 @@ class PrizrakClient:
                     self.connection_id = None
             else:
                 # Not an HTTP status error, log as a generic WebSocket error
-                _LOGGER.error(f"WebSocket error: {type(e).__name__}: {e}")
+                _LOGGER.error("WebSocket connection failed (%s)", type(e).__name__)
                 # Reset connection_id for any connection error to force fresh negotiation
                 self.connection_id = None
 
@@ -380,8 +338,8 @@ class PrizrakClient:
                     continue
                 try:
                     data = json.loads(part)
-                    if data.get('error'):
-                        _LOGGER.error(f"SignalR handshake rejected by server: {data['error']}")
+                    if data.get('error') or data.get('type') == 7:
+                        _LOGGER.error("SignalR handshake rejected by server")
                         return False
                 except json.JSONDecodeError:
                     pass
@@ -392,11 +350,11 @@ class PrizrakClient:
         except asyncio.TimeoutError:
             _LOGGER.error("Timeout waiting for handshake response from server")
             return False
-        except websockets.exceptions.ConnectionClosed as e:
-            _LOGGER.error(f"Connection closed before handshake response: {e}")
+        except ConnectionClosed:
+            _LOGGER.error("Connection closed before handshake response")
             return False
         except Exception as e:
-            _LOGGER.error(f"Error reading handshake response: {e}")
+            _LOGGER.error(f"Error reading handshake response ({type(e).__name__})")
             return False
 
     async def send_ping(self):
@@ -425,7 +383,7 @@ class PrizrakClient:
             "arguments": [{"device_ids": device_ids}]
         }
         await self.websocket.send(json.dumps(request, ensure_ascii=False) + '\x1e')
-        _LOGGER.info(f"Subscribed to devices: {device_ids}")
+        _LOGGER.info("Subscribed to %d device(s)", len(device_ids))
 
     async def send_command(self, device_id: int, command: str, timeout: float = 10.0):
         """Send command to device via WebSocket and wait for response.
@@ -463,7 +421,7 @@ class PrizrakClient:
                 self.websocket.send(json.dumps(request, ensure_ascii=False) + '\x1e'),
                 timeout=5.0
             )
-            _LOGGER.info(f"Sent command {command} to device {device_id} (invocationId={invocation_id})")
+            _LOGGER.info(f"Sent command {command} (invocationId={invocation_id})")
 
             # Wait for server response
             result = await asyncio.wait_for(future, timeout=timeout)
@@ -472,162 +430,185 @@ class PrizrakClient:
                 _LOGGER.info(f"Command {command} confirmed successful by server (invocationId={invocation_id})")
                 return True
             else:
-                error_msg = result.get("error", "Unknown error")
-                _LOGGER.error(f"Command {command} failed: {error_msg} (invocationId={invocation_id})")
+                _LOGGER.error(f"Command {command} was rejected (invocationId={invocation_id})")
                 return False
 
         except asyncio.TimeoutError:
             _LOGGER.error(f"Command {command} timeout - no response from server (invocationId={invocation_id})")
             return False
         except Exception as e:
-            _LOGGER.error(f"Failed to send command {command}: {e} (invocationId={invocation_id})")
+            _LOGGER.error(f"Failed to send command {command} ({type(e).__name__}) (invocationId={invocation_id})")
             return False
         finally:
             # Cleanup pending invocation
             self.pending_invocations.pop(invocation_id, None)
 
+    def _expire_security_state(self, device_id: int) -> None:
+        """Forget security readings while keeping unrelated telemetry."""
+        state = self.device_states.get(device_id, {})
+        if any(key in state for key in SECURITY_FIELDS):
+            for key in SECURITY_FIELDS:
+                state.pop(key, None)
+            # An empty delta notifies HA without advancing the telemetry timestamp.
+            self._state_callback(device_id, {})
+
+    def _invalidate_stream(self) -> None:
+        self._stream_closed = True
+        self._last_device_event.clear()
+        for device_id in self.device_states:
+            self._expire_security_state(device_id)
+
+    async def close_stream(self) -> None:
+        """Publish the loss of availability before waiting for the socket to close."""
+        self._invalidate_stream()
+        if self.websocket:
+            await self.websocket.close()
+
     def handle_event_object(self, arguments):
-        """Handle EventObject - device state updates."""
-        if not arguments:
+        """Merge partial telemetry from the current stream."""
+        if self._stream_closed or not arguments:
             return
 
-        # Update timestamp of last EventObject
-        self.last_event_time = time.time()
-
         event_data = arguments[0]
-        device_id = event_data.get('device_id')
-        device_state = event_data.get('device_state', {})
+        device_id = event_data.get("device_id")
+        if not device_id:
+            return
 
-        if device_id:
-            if device_id not in self.device_states:
-                self.device_states[device_id] = {}
+        self.last_event_time = time.monotonic()
+        # A GPS-only update is still evidence of a live device.
+        self._last_device_event[device_id] = self.last_event_time
+        delta = {
+            key: value for key, value in event_data.get("device_state", {}).items()
+            if key not in ("geo", "geo_ext")
+        }
+        if not delta:
+            return
 
-            self.device_states[device_id].update(device_state)
+        state = self.device_states.setdefault(device_id, {})
+        state.update(delta)
+        # An offline event may also carry the last known guard and alarm values.
+        # Ignore those fields until this device reports that it is connected again.
+        if state.get("connection_state", "Connected") != "Connected":
+            for key in SECURITY_FIELDS:
+                state.pop(key, None)
 
-            # Call Home Assistant callback
-            try:
-                self._state_callback(device_id, device_state)
-            except Exception as e:
-                _LOGGER.error(f"Error in state callback: {e}")
-
-            # Log important info
-            serial = device_state.get('serial_no', 'Unknown')
-            conn_state = device_state.get('connection_state')
-
-            _LOGGER.info(f"Device Update [{device_id}] {serial}")
-
-            if conn_state:
-                _LOGGER.info(f"  Connection: {conn_state}")
-
-            # Security status
-            guard = device_state.get('guard')
-            alarm = device_state.get('alarm')
-            if guard:
-                _LOGGER.info(f"  Guard: {guard}")
-            if alarm and alarm not in ["Unknown", "None"]:
-                _LOGGER.warning(f"  ALARM: {alarm}")
+        self._state_callback(device_id, delta)
+        _LOGGER.debug("Device state updated")
+        alarm = state.get("alarm") if "alarm" in delta else None
+        if alarm and alarm not in ("Unknown", "None", "Off"):
+            _LOGGER.warning("Device reported an alarm")
 
     async def receive_messages(self):
         """Receive and process WebSocket messages."""
         try:
-            self.last_message_time = time.time()
+            self.last_message_time = self.last_event_time = time.monotonic()
             message_count = 0
             _LOGGER.debug("receive_messages: starting loop")
 
             async for message in self.websocket:
+                if self._stream_closed:
+                    return
                 message_count += 1
-                try:
-                    self.last_message_time = time.time()
-
-                    if isinstance(message, bytes):
-                        message = message.decode('utf-8')
-
-                    cleaned = message.strip('\x1e')
-                    if not cleaned:
+                self.last_message_time = time.monotonic()
+                if isinstance(message, bytes):
+                    message = message.decode('utf-8')
+                for frame in message.split('\x1e'):
+                    if not frame:
                         continue
-
-                    data = json.loads(cleaned)
-                    msg_type = data.get('type')
-
-                    if msg_type == 6:
-                        _LOGGER.debug("Ping received, sending pong")
-                        await self.send_ping()
-
-                    elif msg_type == 1:
-                        target = data.get('target')
-                        arguments = data.get('arguments', [])
-
-                        if target == "EventObject":
-                            self.handle_event_object(arguments)
-                        else:
-                            _LOGGER.debug(f"Invocation: {target}")
-
-                    elif msg_type == 3:
-                        # Type 3 = Completion (response to invocation)
-                        invocation_id = data.get('invocationId')
-                        result = data.get('result')
-                        error = data.get('error')
-
-                        _LOGGER.debug(f"Response to invocation {invocation_id}: error={error}")
-
-                        # Check if this is a pending command waiting for response
-                        if invocation_id in self.pending_invocations:
-                            future = self.pending_invocations[invocation_id]
-                            if not future.done():
-                                if error:
-                                    # Server returned error
-                                    future.set_result({
-                                        "success": False,
-                                        "error": error
-                                    })
-                                else:
-                                    # Command successful
-                                    future.set_result({
-                                        "success": True,
-                                        "result": result
-                                    })
-
-                        # Handle GetDevices response
-                        if invocation_id == self.get_devices_invocation_id:
-                            if error:
-                                _LOGGER.error(f"GetDevices error from server: {error}")
-                            elif result and isinstance(result, dict):
-                                devices_data = result.get('data', {}).get('devices', [])
-                                if devices_data:
-                                    self.devices = devices_data
-                                    _LOGGER.info(f"Found {len(devices_data)} device(s):")
-                                    for dev in devices_data:
-                                        _LOGGER.info(f"   • {dev.get('name')} ({dev.get('model')}) - ID: {dev.get('device_id')}")
-                                    device_ids = [d['device_id'] for d in devices_data]
-                                    await self.watch_devices(device_ids)
-                                else:
-                                    _LOGGER.warning(f"GetDevices returned empty device list. Raw result: {result}")
-                            else:
-                                _LOGGER.warning(f"GetDevices unexpected response: result={result}, error={error}")
-                            # Signal ready regardless — HA won't hang forever
-                            if not self.devices_ready.is_set():
-                                self.devices_ready.set()
-                                _LOGGER.info("Devices ready event set")
-
-                except json.JSONDecodeError:
-                    _LOGGER.debug(f"Non-JSON message")
-                except Exception as e:
-                    _LOGGER.error(f"Error processing message: {e}")
+                    try:
+                        data = json.loads(frame)
+                    except json.JSONDecodeError:
+                        _LOGGER.debug("Non-JSON message")
+                        continue
+                    if not isinstance(data, dict):
+                        continue
+                    if data.get("type") == 7:  # SignalR Close
+                        await self.close_stream()
+                        return
+                    try:
+                        await self._handle_signalr_message(data)
+                    except Exception as e:
+                        _LOGGER.error(f"Error processing message ({type(e).__name__})")
 
             # async for exhausted = server closed connection cleanly
             close = self.websocket.close_code
-            reason = self.websocket.close_reason
             _LOGGER.warning(
                 f"receive_messages: loop ended after {message_count} messages "
-                f"(server closed cleanly, code={close}, reason={reason!r})"
+                f"(server closed cleanly, code={close})"
             )
 
-        except websockets.exceptions.ConnectionClosed as e:
-            _LOGGER.warning(f"Connection closed unexpectedly (code={e.code}, reason={e.reason!r})")
+        except ConnectionClosed as e:
+            _LOGGER.warning(f"Connection closed unexpectedly (code={e.code})")
             raise
         except asyncio.TimeoutError:
             _LOGGER.warning("Connection timeout - no messages received")
             raise
+
+        finally:
+            self._invalidate_stream()
+
+    async def _handle_signalr_message(self, data: dict) -> None:
+        msg_type = data.get("type")
+        if msg_type == 6:
+            _LOGGER.debug("Ping received, sending pong")
+            await self.send_ping()
+
+        elif msg_type == 1:
+            target = data.get('target')
+            arguments = data.get('arguments', [])
+
+            if target == "EventObject":
+                self.handle_event_object(arguments)
+            else:
+                _LOGGER.debug("Ignoring unsupported invocation")
+
+        elif msg_type == 3:
+            # Type 3 = Completion (response to invocation)
+            invocation_id = data.get('invocationId')
+            result = data.get('result')
+            error = data.get('error')
+
+            _LOGGER.debug("Invocation response received")
+
+            # Check if this is a pending command waiting for response
+            if invocation_id in self.pending_invocations:
+                future = self.pending_invocations[invocation_id]
+                if not future.done():
+                    if error:
+                        # Server returned error
+                        future.set_result({
+                            "success": False,
+                            "error": error
+                        })
+                    else:
+                        # Command successful
+                        future.set_result({
+                            "success": True,
+                            "result": result
+                        })
+
+            # Handle GetDevices response
+            if invocation_id == self.get_devices_invocation_id:
+                if error:
+                    _LOGGER.error("Server rejected the device list request")
+                elif result and isinstance(result, dict):
+                    devices_data = result.get('data', {}).get('devices', [])
+                    if devices_data:
+                        self.devices = [
+                            {key: dev[key] for key in ('device_id', 'name', 'model') if key in dev}
+                            for dev in devices_data
+                        ]
+                        _LOGGER.info(f"Found {len(devices_data)} device(s):")
+                        device_ids = [d['device_id'] for d in devices_data]
+                        await self.watch_devices(device_ids)
+                    else:
+                        _LOGGER.warning("GetDevices returned an empty device list")
+                else:
+                    _LOGGER.warning("GetDevices returned an unexpected response")
+                # Signal ready regardless — HA won't hang forever
+                if not self.devices_ready.is_set():
+                    self.devices_ready.set()
+                    _LOGGER.info("Devices ready event set")
 
     async def send_proactive_pings(self):
         """Send ping to server every 15 seconds to keep connection alive."""
@@ -640,7 +621,8 @@ class PrizrakClient:
                     self.last_ping_time = time.time()
                     _LOGGER.debug(f"Proactive ping sent (keep-alive)")
                 except Exception as e:
-                    _LOGGER.error(f"Failed to send proactive ping: {e}")
+                    _LOGGER.error(f"Failed to send proactive ping ({type(e).__name__})")
+                    await self.close_stream()
                     break
 
     async def check_connection_health(self):
@@ -648,34 +630,23 @@ class PrizrakClient:
         while self.running:
             await asyncio.sleep(10)
 
-            if self.websocket:
-                # Check for any messages (including ping/pong)
-                if self.last_message_time > 0:
-                    time_since_last_msg = time.time() - self.last_message_time
+            if not self.websocket or self._stream_closed:
+                return
 
-                    if time_since_last_msg > self.message_timeout:
-                        _LOGGER.warning(f"No messages for {int(time_since_last_msg)}s - connection may be dead")
-                        _LOGGER.info("Initiating reconnection...")
+            now = time.monotonic()
+            if (
+                now - self.last_message_time > self.message_timeout
+                or now - self.last_event_time > self.event_timeout
+            ):
+                _LOGGER.warning("Stream timed out, reconnecting")
+                await self.close_stream()
+                return
 
-                        try:
-                            await self.websocket.close()
-                        except:
-                            pass
-                        break
-
-                # Check for EventObject specifically (device state updates)
-                if self.last_event_time > 0:
-                    time_since_last_event = time.time() - self.last_event_time
-
-                    if time_since_last_event > self.event_timeout:
-                        _LOGGER.warning(f"No EventObject updates for {int(time_since_last_event)}s - watch may be broken")
-                        _LOGGER.info("Initiating reconnection to re-subscribe...")
-
-                        try:
-                            await self.websocket.close()
-                        except:
-                            pass
-                        break
+            # Other vehicles and SignalR pings can keep a silent vehicle's socket alive.
+            for device_id, last_seen in list(self._last_device_event.items()):
+                if now - last_seen > self.event_timeout:
+                    del self._last_device_event[device_id]
+                    self._expire_security_state(device_id)
 
     async def run(self):
         """Main run loop with auto-recovery."""
@@ -699,6 +670,7 @@ class PrizrakClient:
                 if await self.connect_websocket():
                     await self.send_handshake()
                     if not await self.receive_handshake_response():
+                        await self.close_stream()
                         self.connection_id = None
                         await asyncio.sleep(self.reconnect_delay)
                         continue
@@ -736,8 +708,8 @@ class PrizrakClient:
                     await asyncio.sleep(delay)
                     continue
 
-            except websockets.exceptions.ConnectionClosed as e:
-                _LOGGER.warning(f"Connection closed (code={e.code}, reason={e.reason!r}), reconnecting in {self.reconnect_delay}s...")
+            except ConnectionClosed as e:
+                _LOGGER.warning(f"Connection closed (code={e.code}), reconnecting in {self.reconnect_delay}s...")
                 self.reconnect_attempts += 1
                 await asyncio.sleep(self.reconnect_delay)
                 self.connection_id = None
@@ -754,16 +726,15 @@ class PrizrakClient:
                 break
 
             except Exception as e:
-                _LOGGER.error(f"Error: {e}")
+                _LOGGER.error(f"Error ({type(e).__name__})")
                 self.reconnect_attempts += 1
                 await asyncio.sleep(self.reconnect_delay)
                 self.connection_id = None
 
-        if self.websocket:
-            await self.websocket.close()
-
+        await self.close_stream()
         _LOGGER.info("Client stopped")
 
     def stop(self):
         """Stop the client."""
+        self._invalidate_stream()
         self.running = False

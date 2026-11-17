@@ -5,22 +5,14 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 DOMAIN = "prizrak"
 CONF_EMAIL = "email"
 CONF_PASSWORD = "password"
+SECURITY_FIELDS = ("guard", "alarm")
 
-PLATFORMS = ["sensor", "binary_sensor", "button", "device_tracker"]
 
 # Sensor definitions: (name, unit, device_class, icon, state_key, state_class)
 SENSOR_TYPES = {
     "serial_no": ("Serial Number", None, None, "mdi:identifier", "serial_no", None),
     "last_update": ("Last Update", None, SensorDeviceClass.TIMESTAMP, "mdi:clock-outline", "last_update", None),
     "last_device_exchange_time": ("Last Device Exchange", None, SensorDeviceClass.TIMESTAMP, "mdi:swap-horizontal", "last_device_exchange_time", None),
-
-    # GPS
-    "latitude": ("Latitude", "°", None, "mdi:map-marker", "geo.lat", SensorStateClass.MEASUREMENT),
-    "longitude": ("Longitude", "°", None, "mdi:map-marker", "geo.lon", SensorStateClass.MEASUREMENT),
-    "gnss_speed": ("GNSS Speed", "km/h", SensorDeviceClass.SPEED, "mdi:speedometer", "geo_ext.gnss_speed", SensorStateClass.MEASUREMENT),
-    "altitude": ("Altitude", "m", SensorDeviceClass.DISTANCE, "mdi:altimeter", "geo_ext.gnss_height", SensorStateClass.MEASUREMENT),
-    "satellites": ("Satellites", None, None, "mdi:satellite-variant", "geo_ext.gnss_sat_used", SensorStateClass.MEASUREMENT),
-    "azimuth": ("Azimuth", "°", None, "mdi:compass", "geo_ext.gnss_azimuth", SensorStateClass.MEASUREMENT),
 
     # Telemetry
     "battery_voltage": ("Battery Voltage", "V", SensorDeviceClass.VOLTAGE, "mdi:car-battery", "accum_voltage", SensorStateClass.MEASUREMENT),
@@ -69,9 +61,6 @@ BINARY_SENSOR_TYPES = {
     # Engine & Systems
     "ignition": ("Ignition", BinarySensorDeviceClass.RUNNING, "ignition_switch"),
     "parking_brake": ("Parking Brake", BinarySensorDeviceClass.PROBLEM, "parking_brake"),
-
-    # GPS
-    "gps": ("GPS", None, "geo.gps_state"),
 }
 
 # Button definitions: (name, command, icon)

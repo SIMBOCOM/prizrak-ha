@@ -57,7 +57,7 @@ def get_nested_value(data: dict, key: str) -> Any:
 
     Args:
         data: Dictionary to search
-        key: Key in dot notation (e.g., 'geo.lat' or 'balance.value')
+        key: Key in dot notation (e.g., 'balance.value')
 
     Returns:
         Value if found, None otherwise

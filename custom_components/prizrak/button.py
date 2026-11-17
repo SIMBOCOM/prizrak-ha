@@ -87,7 +87,7 @@ class PrizrakButton(CoordinatorEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         """Handle the button press."""
-        _LOGGER.info(f"Button pressed: {self._command} for device {self._device_id}")
+        _LOGGER.info(f"Button pressed: {self._command}")
 
         # Check if coordinator is available
         if not self.coordinator.client.websocket:
@@ -107,23 +107,16 @@ class PrizrakButton(CoordinatorEntity, ButtonEntity):
                 self._command,
                 timeout=10.0
             )
+        except Exception as exc:
+            _LOGGER.error("Command execution failed (%s)", type(exc).__name__)
+            raise HomeAssistantError("Unable to execute the Prizrak command") from None
 
-            if success:
-                _LOGGER.info(f"Command {self._command} executed successfully on device {self._device_id}")
-            else:
-                _LOGGER.error(f"Command {self._command} failed on device {self._device_id}")
-                raise HomeAssistantError(
-                    f"Command failed: Server rejected the command or device is offline. "
-                    f"Please check device status and try again."
-                )
-
-        except Exception as e:
-            _LOGGER.error(f"Error executing command {self._command}: {e}")
-            if isinstance(e, HomeAssistantError):
-                raise
+        if not success:
             raise HomeAssistantError(
-                f"Command execution error: {str(e)}"
+                "Command failed: Server rejected the command or device is offline. "
+                "Please check device status and try again."
             )
+        _LOGGER.info("Command %s executed successfully", self._command)
 
     @property
     def available(self) -> bool:

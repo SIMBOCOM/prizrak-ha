@@ -1,14 +1,15 @@
 {
   "domain": "prizrak",
   "name": "Prizrak Monitoring",
-  "codeowners": ["@dsultanr"],
+  "codeowners": ["@SIMBOCOM"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/dsultanr/prizrak-ha-integration",
+  "documentation": "https://github.com/SIMBOCOM/prizrak-ha-no-gps",
+  "issue_tracker": "https://github.com/SIMBOCOM/prizrak-ha-no-gps/issues",
   "integration_type": "hub",
   "iot_class": "cloud_push",
   "requirements": [
-    "websockets>=12.0"
+    "websockets>=17.4"
   ],
-  "version": "1.0.3"
+  "version": "1.0.4"
 }

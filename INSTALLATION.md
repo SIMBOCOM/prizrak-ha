@@ -1,17 +1,18 @@
 # Инструкция по установке Prizrak HA Integration
 
-## Вариант 1: Локальная установка
+## Установка через HACS
 
-### Шаг 1: Копирование файлов
-```bash
-# Скопируйте папку custom_components/prizrak в директорию Home Assistant
-cp -r prizrak-ha /path/to/homeassistant/custom_components/
+Откройте HACS → ⋮ → «Пользовательские репозитории», добавьте `https://github.com/SIMBOCOM/prizrak-ha-no-gps` с типом **Integration** и скачайте **Prizrak Monitoring без GPS**. Перезапустите Home Assistant.
 
-# Например, если Home Assistant установлен в /home/homeassistant/.homeassistant:
-cp -r prizrak-ha /home/homeassistant/.homeassistant/custom_components/
-```
+## Ручная установка версии без GPS
 
-### Шаг 2: Перезапуск Home Assistant
+Для библиотеки `websockets` версии 17.4 требуется Python 3.11 или новее. При запуске Home Assistant проверяет зависимость `websockets>=17.4` и при необходимости устанавливает её.
+
+1. Распакуйте архив и скопируйте папку `custom_components/prizrak` в `/config/custom_components/`.
+2. Если Prizrak уже установлен, замените его каталог целиком. После перезапуска интеграция уберёт свои прежние GPS-сущности. Если вы добавляли GPS на панель вручную, отредактируйте соответствующие карточки.
+3. Для обновлений этой версии выбирайте в HACS репозиторий `SIMBOCOM/prizrak-ha-no-gps`.
+
+### Перезапуск Home Assistant
 ```bash
 # Перезапустите Home Assistant
 sudo systemctl restart home-assistant@homeassistant
@@ -19,34 +20,13 @@ sudo systemctl restart home-assistant@homeassistant
 # Или через UI: Settings → System → Restart
 ```
 
-### Шаг 3: Добавление интеграции
+### Добавление интеграции при первой установке
 1. Откройте Home Assistant
 2. Перейдите в **Settings** → **Devices & Services**
 3. Нажмите **"+ ADD INTEGRATION"**
 4. Найдите **"Prizrak Monitoring"**
 5. Введите email и пароль от monitoring.tecel.ru
 6. Нажмите **Submit**
-
-## Вариант 2: Установка через HACS
-
-### Предварительные требования
-1. Установлен HACS в Home Assistant
-
-### Шаги:
-
-#### 1. Добавьте в HACS
-1. Откройте HACS в Home Assistant
-2. Перейдите в "Integrations"
-3. Нажмите три точки (⋮) → "Custom repositories"
-4. URL: `https://github.com/dsultanr/prizrak-ha-integration`
-5. Category: "Integration"
-6. Нажмите "Add"
-
-#### 2. Установите интеграцию
-1. Найдите "Prizrak Monitoring" в HACS
-2. Нажмите "Download"
-3. Перезапустите Home Assistant
-4. Добавьте интеграцию через Settings → Devices & Services
 
 ## Проверка установки
 
@@ -83,8 +63,8 @@ sudo systemctl restart home-assistant@homeassistant
 ## Устранение проблем
 
 ### Интеграция не появляется в списке
-1. Проверьте, что папка `custom_components/prizrak-ha` существует
-2. Проверьте права доступа: `chmod -R 755 custom_components/prizrak-ha`
+1. Проверьте, что папка `custom_components/prizrak` существует
+2. Проверьте права доступа: `custom_components/prizrak`
 3. Перезапустите Home Assistant
 4. Очистите кеш браузера (Ctrl+Shift+R)
 
@@ -102,5 +82,5 @@ sudo systemctl restart home-assistant@homeassistant
 ## Дополнительная информация
 
 - **Документация**: [README.md](README.md)
-- **GitHub**: https://github.com/dsultanr/prizrak-ha-integration
-- **Issues**: https://github.com/dsultanr/prizrak-ha-integration/issues
+- **GitHub**: https://github.com/SIMBOCOM/prizrak-ha-no-gps
+- **Issues**: https://github.com/SIMBOCOM/prizrak-ha-no-gps/issues

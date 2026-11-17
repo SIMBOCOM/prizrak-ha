@@ -63,8 +63,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
+            except Exception as exc:  # pylint: disable=broad-except
+                _LOGGER.error("Prizrak configuration failed (%s)", type(exc).__name__)
                 errors["base"] = "unknown"
             else:
                 # Check if already configured

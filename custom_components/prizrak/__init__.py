@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
+import re
 import shutil
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 from .client import PrizrakClient
 from .const import DOMAIN, CONF_EMAIL, CONF_PASSWORD
@@ -17,7 +18,24 @@ from .coordinator import PrizrakDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON, Platform.DEVICE_TRACKER]
+LEGACY_GPS_KEYS = {
+    "device_tracker": {"tracker"},
+    "binary_sensor": {"gps"},
+    "sensor": {"latitude", "longitude", "gnss_speed", "altitude", "satellites", "azimuth"},
+}
+
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
+
+
+def _remove_legacy_gps_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove GPS entities created by earlier releases, including renamed ones."""
+    registry = er.async_get(hass)
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity.platform != DOMAIN:
+            continue
+        match = re.fullmatch(r"prizrak_[0-9]+_(.+)", entity.unique_id)
+        if match and match[1] in LEGACY_GPS_KEYS.get(entity.domain, ()):
+            registry.async_remove(entity.entity_id)
 
 
 async def _setup_www_files(hass: HomeAssistant) -> None:
@@ -78,6 +96,8 @@ async def _setup_www_files(hass: HomeAssistant) -> None:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Prizrak from a config entry."""
+    _remove_legacy_gps_entities(hass, entry)
+
     # Copy SVG files on first setup
     await _setup_www_files(hass)
 
@@ -87,18 +107,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Create coordinator
     coordinator = PrizrakDataUpdateCoordinator(hass, None)
 
-    # Create client with coordinator callback that schedules updates in HA event loop
-    def state_update_callback(device_id: int, state: dict) -> None:
-        """Schedule state update in HA event loop."""
-        hass.loop.call_soon_threadsafe(
-            coordinator.handle_device_update, device_id, state
-        )
-
-    client = PrizrakClient(
-        email,
-        password,
-        state_update_callback
-    )
+    # WebSocket events and disconnect notifications already run on the HA loop.
+    client = PrizrakClient(email, password, coordinator.handle_device_update)
 
     # Store client in coordinator
     coordinator.client = client
@@ -113,7 +123,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             await client.run()
         except Exception as e:
-            _LOGGER.error(f"Client error: {e}")
+            _LOGGER.error("Prizrak client failed (%s)", type(e).__name__)
 
     # Create background task
     task = hass.async_create_task(start_client_task())
@@ -141,10 +151,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Close current WebSocket connection to trigger reconnect
         if coordinator.client.websocket:
             try:
-                await coordinator.client.websocket.close()
+                await coordinator.client.close_stream()
                 _LOGGER.info("WebSocket closed, will reconnect automatically")
             except Exception as e:
-                _LOGGER.error(f"Error closing WebSocket: {e}")
+                _LOGGER.error("WebSocket close failed (%s)", type(e).__name__)
 
         # Reset connection_id to force new negotiation
         coordinator.client.connection_id = None

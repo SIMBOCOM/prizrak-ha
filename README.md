@@ -1,16 +1,13 @@
-# Интеграция Prizrak Monitoring для Home Assistant
+# Prizrak Monitoring без GPS для Home Assistant
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+<img src="custom_components/prizrak/brand/icon.png" width="72" height="72" alt="Значок приложения Призрак 2.0">
 
-Интеграция Home Assistant для системы мониторинга автомобилей Prizrak (monitoring.tecel.ru).
-
-<img width="670" height="730" alt="image" src="https://github.com/user-attachments/assets/5c61560b-5473-4879-8d77-449573ce1885" />
+Интеграция для системы мониторинга автомобилей Prizrak (monitoring.tecel.ru). Эта версия сохраняет телеметрию, охрану и управление автомобилем, а GPS-данные отбрасывает.
 
 ## Возможности
 
 - **Обновления в реальном времени** через WebSocket соединение
-- **40+ сенсоров**, включая:
-  - GPS локация (широта, долгота, высота, скорость, спутники)
+- **Датчики автомобиля**
   - Телеметрия (напряжение батареи, уровень топлива, температуры, обороты, одометр)
   - Безопасность (статус охраны, сигнализация)
   - GSM сигнал и баланс SIM-карты
@@ -21,18 +18,14 @@
 
 ## Установка
 
-### HACS (Рекомендуется)
+### Через HACS
 
-1. Откройте HACS в вашем Home Assistant
-2. Перейдите в раздел "Интеграции"
-3. Нажмите три точки в правом верхнем углу
-4. Выберите "Пользовательские репозитории"
-5. Добавьте URL репозитория: `https://github.com/dsultanr/prizrak-ha-integration`
-6. Категория: "Интеграция"
-7. Нажмите "Добавить"
-8. Найдите "Prizrak Monitoring"
-9. Нажмите "Загрузить"
-10. Перезапустите Home Assistant
+1. Откройте HACS → ⋮ → «Пользовательские репозитории».
+2. Вставьте `https://github.com/SIMBOCOM/prizrak-ha-no-gps`, выберите тип **Integration** («Интеграция») и нажмите «Добавить».
+3. Откройте **Prizrak Monitoring без GPS**, нажмите «Скачать» и перезапустите Home Assistant.
+4. При первой установке добавьте **Prizrak Monitoring** в разделе «Настройки → Устройства и службы». Если интеграция уже настроена, она использует существующую запись.
+
+Эта версия использует тот же домен `prizrak`, что и исходный проект. Для обновлений в HACS выбирайте этот репозиторий.
 
 ### Ручная установка
 
@@ -132,14 +125,9 @@ cards:
       - entity: sensor.prizrak_95311_temperature
       - entity: sensor.prizrak_95311_engine_temperature
 
-  - type: map
-    entities:
-      - entity: sensor.prizrak_95311_latitude
-    hours_to_show: 24
-    aspect_ratio: "16:9"
 ```
 
-**Примечание:** Замените `95311` на ID вашего устройства (можно узнать из логов или entity_id).
+**Примечание:** Замените `95311` на ID вашего устройства (он указан в entity_id).
 
 ## Визуализация автомобиля
 
@@ -183,6 +171,8 @@ cards:
 - 🛡️ Охрана (Guard)
 - 🚨 Тревога (Alarm)
 
+При обрыве облачного соединения или сообщении автомобиля о потере связи оба датчика переходят в состояние «Недоступно». Если от отдельного автомобиля перестают поступать обновления, интеграция обнаруживает это по тайм-ауту в 120 секунд с проверкой каждые 10 секунд. При восстановлении связи каждый датчик ждёт своего первого свежего значения.
+
 **Двери и замки:**
 - 🚗 Водительская дверь
 - 🚗 Пассажирская дверь
@@ -195,16 +185,8 @@ cards:
 **Двигатель и системы:**
 - 🔑 Зажигание (Ignition)
 - 🅿️ Ручной тормоз (Parking Brake)
-- 📡 GPS статус
 
 ### Обычные сенсоры (Sensors)
-
-**GPS и местоположение:**
-- Широта, Долгота
-- Скорость GNSS
-- Высота
-- Количество спутников
-- Азимут (направление по компасу)
 
 **Телеметрия автомобиля:**
 - Напряжение батареи
@@ -305,35 +287,6 @@ automation:
             priority: high
 ```
 
-### Отслеживание местоположения на карте
-
-```yaml
-# В configuration.yaml добавьте:
-zone:
-  - name: Дом
-    latitude: 55.751244
-    longitude: 37.618423
-    radius: 100
-
-automation:
-  - alias: "Prizrak: Машина покинула дом"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.my_car_latitude
-    condition:
-      - condition: template
-        value_template: >
-          {% set lat = states('sensor.my_car_latitude') | float %}
-          {% set lon = states('sensor.my_car_longitude') | float %}
-          {% set distance = distance(lat, lon, 55.751244, 37.618423) %}
-          {{ distance > 0.1 }}
-    action:
-      - service: notify.mobile_app
-        data:
-          title: "Машина уехала"
-          message: "Автомобиль покинул зону дома"
-```
-
 ## Устранение неполадок
 
 ### Интеграция не загружается
@@ -358,21 +311,22 @@ automation:
 
 ## Поддержка
 
-- **Проблемы**: [GitHub Issues](https://github.com/dsultanr/prizrak-ha-integration/issues)
-- **Обсуждения**: [GitHub Discussions](https://github.com/dsultanr/prizrak-ha-integration/discussions)
+- **Проблемы**: [GitHub Issues](https://github.com/SIMBOCOM/prizrak-ha-no-gps/issues)
 
 ## Лицензия
 
-Этот проект лицензирован под лицензией MIT - см. файл [LICENSE](LICENSE) для подробностей.
+Код распространяется по [лицензии MIT](LICENSE). Права на фирменную иконку остаются у её правообладателя.
 
 ## Благодарности
 
 [Поблагодарить](https://pay.cloudtips.ru/p/aa2fce54)
 
-Создано [@dsultanr](https://github.com/dsultanr)
+Исходную интеграцию разработал [@dsultanr](https://github.com/dsultanr/prizrak-ha-integration).
+
+Значок приложения «Призрак 2.0» принадлежит ТЭК электроникс. [Источник в App Store](https://apps.apple.com/ru/app/id1473587827).
 
 ## Отказ от ответственности
 
-Протестировано только на Призрак-8XL/Slim/7.6
+Автор исходного проекта указывает модель Призрак-8XL/Slim/7.6. Версия без GPS проверена на Home Assistant Core 2026.11.2 и на демоаккаунте сервиса.
 
 Это неофициальная интеграция и не связана с компанией ТЭК электроникс или сервисом monitoring.tecel.ru.

@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, BINARY_SENSOR_TYPES
+from .const import DOMAIN, BINARY_SENSOR_TYPES, SECURITY_FIELDS
 from .coordinator import PrizrakDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -86,22 +86,14 @@ class PrizrakBinarySensor(CoordinatorEntity, BinarySensorEntity):
         }
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         """Return true if the binary sensor is on."""
         device_state = self.coordinator.devices.get(self._device_id, {})
 
-        # Handle nested keys (e.g., "geo.gps_state")
-        if '.' in self._state_key:
-            keys = self._state_key.split('.')
-            value = device_state
-            for key in keys:
-                if isinstance(value, dict):
-                    value = value.get(key)
-                else:
-                    value = None
-                    break
-        else:
-            value = device_state.get(self._state_key)
+        value = device_state.get(self._state_key)
+
+        if self._state_key in SECURITY_FIELDS and value in (None, "", "Unknown", "None"):
+            return None
 
         # Doors/locks: "Open" = ON (open)
         if value == "Open":
@@ -113,15 +105,11 @@ class PrizrakBinarySensor(CoordinatorEntity, BinarySensorEntity):
 
         # Guard: any state except SafeGuardOff = ON
         if self._state_key == "guard":
-            return value not in ["SafeGuardOff", "Unknown", None, ""]
+            return value != "SafeGuardOff"
 
         # Alarm: anything except "Off" = ON
         if self._state_key == "alarm":
-            return value not in ["Off", "Unknown", None, ""]
-
-        # GPS: "Actual" = ON
-        if self._state_key == "geo.gps_state":
-            return value == "Actual"
+            return value != "Off"
 
         # Ignition: any state except engine off states = ON
         if self._state_key == "ignition_switch":
@@ -136,4 +124,6 @@ class PrizrakBinarySensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
+        if self._state_key in SECURITY_FIELDS:
+            return self._state_key in self.coordinator.devices.get(self._device_id, {})
         return self._device_id in self.coordinator.devices
